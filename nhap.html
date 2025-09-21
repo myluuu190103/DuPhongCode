@@ -1,0 +1,578 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Quản Lý Khóa Học • JSON driven</title>
+
+  <!-- ▸ Styles & fonts -->
+  <link rel="stylesheet" href="https://cdn.datatables.net/1.13.7/css/jquery.dataTables.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- ▸ Scripts -->
+  <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+  <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
+
+ 
+</head>
+<body>
+  <div class="app-container">
+
+    <main class="content-area">
+      <!-- ▸ Desktop upcoming highlight -->
+      <section id="desktopHighlights" class="upcoming-carousel-wrapper"></section>
+
+      <!-- ▸ Search -->
+      <section class="search-section">
+        <div class="search-container">
+          <i class="fas fa-search search-icon"></i>
+          <input id="globalSearch" class="search-input"
+                 placeholder="Tìm kiếm thông tin khóa học, giảng viên, địa điểm..."
+                 autocomplete="off">
+        </div>
+      </section>
+
+      <!-- ▸ Desktop table -->
+      <div class="desktop-table">
+        <div class="table-container">
+          <table id="courses" class="display nowrap">
+            <thead>
+              <tr>
+                <th>KHÓA HỌC</th>
+                <th>GIẢNG VIÊN</th>
+                <th>THỜI GIAN</th>
+                <th>ĐỊA ĐIỂM</th>
+                <th>HÌNH THỨC</th>
+                <!-- <th>Học phí</th> -->
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- ▸ Mobile cards -->
+      <div id="mobileCardContainer" class="mobile-card-container"></div>
+    </main>
+  </div>
+
+  <!-- ▸ Mobile Scroll Indicator -->
+  <div id="mobileScrollIndicator" class="mobile-scroll-indicator">
+    <i class="fas fa-chevron-down mobile-scroll-indicator-icon"></i>
+    <span class="mobile-scroll-indicator-text">Vuốt để xem thêm</span>
+  </div>
+
+<script>
+  const specialCourses = ["Chánh Kiến 1", "Nhân Tướng Học", "Rèn Trí Sáng Suốt", "Rèn Tâm Vững Vàng"];
+
+  /* ========================================================================
+   *  Helper: bỏ dấu tiếng Việt & loại ký tự đặc biệt
+   * ======================================================================*/
+  const stripVN = str =>
+    (str || '')
+      .toString()
+      .normalize('NFD')                // tách dấu
+      .replace(/[\u0300-\u036f]/g, '') // bỏ dấu
+      .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+      .replace(/[^\w\s]/g, '')         // bỏ ký tự lạ (₫, ., , ...)
+      .toLowerCase();
+
+  const VND = n => (n || 0).toLocaleString('vi-VN') + ' vnđ';
+  const parseNum = t => parseInt(String(t).replace(/[^\d]/g, '')) || 0;
+
+  const createModeBadge = mode => {
+    const online = /online|zoom|trực tuyến/i.test(mode);
+    const hybrid = /hybrid|kết hợp/i.test(mode);
+    let cls, icon;
+    if (online)      [cls, icon] = ['online',  'fa-video'];
+    else if (hybrid) [cls, icon] = ['hybrid',  'fa-people-arrows'];
+    else             [cls, icon] = ['offline', 'fa-chalkboard-teacher'];
+    return `<span class="mode-badge ${cls}"><i class="fas ${icon}"></i> ${mode || '?'}</span>`;
+  };
+
+  /* ====== Custom sort for DD/MM/YYYY & VND ====== */
+  $.fn.dataTable.ext.type.order['ddmmyyyy-pre'] = d => {
+    if (!d || d.includes('--')) return 0;
+    const [dd, mm, yyyy] = d.split('/') || [];
+    return new Date(yyyy, mm - 1, dd).getTime() || 0;
+  };
+  $.fn.dataTable.ext.type.order['vnd-pre'] = t => parseNum(t);
+
+  /* ----------------------------------------------------------------------
+   *  🔍  Accent-insensitive, number-friendly SEARCH plug-in
+   * -------------------------------------------------------------------- */
+  $.fn.dataTable.ext.search.push((settings, data, dataIndex, rowData) => {
+    const query = stripVN($('#globalSearch').val().trim().toLowerCase());
+    if (!query) return true;
+
+    // Kiểm tra từng cột của dữ liệu gốc
+    return Object.values(rowData).some(val => {
+      if (typeof val === 'number') {
+        // Xử lý số tiền (tuition) hoặc các giá trị số
+        return stripVN(VND(val)).includes(query) || String(val).includes(query);
+      }
+      // Xử lý chuỗi (bao gồm HTML)
+      const text = typeof val === 'string' ? val : String(val);
+      return stripVN($('<div>').html(text).text()).includes(query);
+    });
+  });
+
+  /* ========================================================================
+   *  Data fetching
+   * ======================================================================*/
+  async function getData() {
+    try {
+      const res = await fetch('https://webhook.gnh.vn/webhook/event_info', { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.status);
+      const raw = await res.json();
+      return raw
+        .filter(x => x.course && x.speaker)
+        .map(x => {
+          // Xử lý học phí đặc biệt
+          let processedFee;
+          if (x.tuition === "Liên hệ" || x.tuition === "liên hệ") {
+            processedFee = "Liên hệ";
+          } else if (!x.tuition || x.tuition === "" || x.tuition === null) {
+            processedFee = "--";
+          } else {
+            processedFee = parseNum(x.tuition);
+          }
+
+          return {
+            start: x.start_date || '--/--/----',
+            end: x.end_date || '--/--/----',
+            speaker: x.speaker,
+            course: x.course,
+            loc: x.location || 'N/A',
+            mode: x.learning_mode || 'N/A',
+            fee: processedFee,
+            href: x.href || '#',
+            thumbnail: x.thumbnail || '', // Thêm thumbnail
+            description: x.description || '', // Thêm description
+            categories: x.categories || ''  // Thêm categories
+          };
+        });
+    } catch (err) {
+      console.warn('API lỗi, dùng dữ liệu demo:', err);
+      return [
+        { start: '10/06/2025', end: '15/06/2025', speaker: 'API Đã Bị Lỗi', course: 'API Đã Bị Lỗi', loc: 'API Đã Bị Lỗi', mode: 'Trực tuyến', fee: 2000000, href: '#', thumbnail: 'https://via.placeholder.com/289x165/4f46e5/ffffff?text=Python', description: 'API Đã Bị Lỗi', categories: 'Lập trình' },
+        { start: '20/06/2025', end: '25/06/2025', speaker: 'API Đã Bị Lỗi', course: 'API Đã Bị Lỗi', loc: 'API Đã Bị Lỗi', mode: 'Tại chỗ', fee: 3500000, href: '#', thumbnail: 'https://via.placeholder.com/289x165/7c3aed/ffffff?text=PM', description: 'API Đã Bị Lỗi', categories: 'Quản lý' }
+      ];
+    }
+  }
+
+  /* ========================================================================
+   *  Mobile card renderer
+   * ======================================================================*/
+  function fillCards(data) {
+    const container = $('#mobileCardContainer').empty();
+    if (!data || !data.length) {
+      container.html('<p style="text-align:center;padding:1.5rem;color:var(--text-muted)">Không tìm thấy khóa học phù hợp.</p>');
+      return;
+    }
+    
+    // Dữ liệu cho cards giờ đã được lọc trước khi gọi hàm này.
+    // Chỉ cần sắp xếp theo ngày bắt đầu (gần nhất ở đầu).
+    const sortedData = [...data].sort((a, b) => {
+      // Hàm chuyển đổi DD/MM/YYYY thành Date object
+      const parseDate = (dateStr) => {
+        if (!dateStr || dateStr.includes('--')) return new Date(0); // Ngày xa nhất nếu không có
+        const [dd, mm, yyyy] = dateStr.split('/');
+        return new Date(yyyy, mm - 1, dd); // mm - 1 vì tháng trong JS bắt đầu từ 0
+      };
+      
+      const dateA = parseDate(a.start);
+      const dateB = parseDate(b.start);
+      
+      // Sắp xếp tăng dần (ngày gần nhất ở đầu)
+      return dateA.getTime() - dateB.getTime();
+    });
+    
+    const getModeBadgeClass = mode => {
+      const online = /online|zoom|trực tuyến/i.test(mode);
+      const hybrid = /hybrid|kết hợp/i.test(mode);
+      return online ? 'online' : hybrid ? 'hybrid' : 'offline';
+    };
+    
+    const getModeIcon = mode => {
+      const online = /online|zoom|trực tuyến/i.test(mode);
+      const hybrid = /hybrid|kết hợp/i.test(mode);
+      return online ? 'fa-video' : hybrid ? 'fa-people-arrows' : 'fa-chalkboard-teacher';
+    };
+    
+    container.html(sortedData.map(c => {
+      const isSpecial = specialCourses.includes(c.course);
+      const specialClass = isSpecial ? 'special-course-highlight' : '';
+
+      const formatDM = d => {
+        if (!d || d.includes('--')) return '??/??';
+        const [dd, mm] = d.split('/');
+        return `${dd}/${mm}`;
+      };
+      
+      const dateDisplay = c.start === c.end
+        ? formatDM(c.start)
+        : `${formatDM(c.start)} - ${formatDM(c.end)}`;
+
+      return `
+      <article class="course-card">
+        <div class="card-thumbnail-container">
+          ${c.thumbnail ? 
+            `<img src="${c.thumbnail}" alt="${c.course}" class="card-thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+             <div class="card-thumbnail-placeholder" style="display:none;">${c.course}</div>` : 
+            `<div class="card-thumbnail-placeholder">${c.course}</div>`
+          }
+        </div>
+        
+        <div class="card-header">
+          <h3 class="card-title ${specialClass}">${c.course}</h3>
+        </div>
+        
+        <div class="card-body">
+          <div class="card-meta">
+            <span class="card-mode-badge ${getModeBadgeClass(c.mode)}">
+              <i class="fas ${getModeIcon(c.mode)}"></i>
+              ${c.mode}
+            </span>
+          </div>
+          
+          <div class="card-info-grid">
+            <div class="card-info-item">
+              <i class="fas fa-user info-icon"></i>
+              <span class="info-value">${c.speaker}</span>
+            </div>
+            <div class="card-info-item">
+              <i class="fas fa-calendar info-icon"></i>
+              <span class="info-value">${dateDisplay}</span>
+            </div>
+            <div class="card-info-item">
+              <i class="fas fa-map-marker-alt info-icon"></i>
+              <span class="info-value">${c.loc}</span>
+            </div>
+            ${c.categories ? `
+            <div class="card-info-item">
+              <i class="fas fa-tag info-icon"></i>
+              <span class="info-value">${c.categories}</span>
+            </div>` : ''}
+          </div>
+          
+          <div class="card-price">${typeof c.fee === 'string' ? c.fee : VND(c.fee)}</div>
+          
+          ${c.description ? `<div class="card-description">${c.description}</div>` : ''}
+        </div>
+        
+        <div class="card-footer">
+          <a href="${c.href}" target="_blank" class="card-register-btn">Đăng ký ngay</a>
+          <a href="${c.href}" target="_blank" class="card-details-btn">Chi tiết</a>
+        </div>
+      </article>`}).join(''));
+
+    // Update mobile scroll indicator after cards are rendered
+    if (window.updateMobileScrollIndicator) {
+      setTimeout(window.updateMobileScrollIndicator, 100);
+    }
+  }
+
+  /* ====== Debounce helper ====== */
+  const debounce = (fn, ms = 250) => {
+    let id;
+    return (...args) => {
+      clearTimeout(id);
+      id = setTimeout(() => fn.apply(this, args), ms);
+    };
+  };
+
+  /* ========================================================================
+   *  Desktop Upcoming Highlights renderer
+   * ======================================================================*/
+  function renderHighlights(courseData){
+    const container = $('#desktopHighlights').empty();
+    if($(window).width()<1200) return; // only desktop
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Set to start of day for accurate comparison
+    const parseDate = (d)=>{ if(!d||d.includes('--')) return null; const [dd,mm,yy]=d.split('/'); return new Date(yy,mm-1,dd); };
+
+    const groups = [
+      {id:'hcm',label:'Tại Hồ Chí Minh',  match: c=>/Hồ Chí Minh/i.test(c.loc)},
+      {id:'hn', label:'Tại Hà Nội',   match: c=>/Hà Nội/i.test(c.loc)},
+      {id:'other',label:'Tỉnh/Thành Phố Khác', match: c=>!/(Hồ Chí Minh|Hà Nội|Zoom)/i.test(c.loc)},
+      {id:'online',label:'Trực Tuyến Qua Zoom', match: c=>/zoom/i.test(c.loc)}
+    ];
+
+    let htmls = [];
+    groups.forEach(g=>{
+      // Dữ liệu cho highlights giờ đã được lọc trước, chỉ cần nhóm và sắp xếp.
+      const list = courseData
+        .filter(c=>g.match(c))
+        .sort((a,b)=>parseDate(a.start)-parseDate(b.start));
+
+      const formatDM = d=>{const [dd,mm] = d.split('/'); return `${dd}/${mm}`};
+      const items=list.map(c => {
+        const specialClass = specialCourses.includes(c.course) ? 'special-course-highlight' : '';
+        const dateDisplay = c.start === c.end ? formatDM(c.start) : `${formatDM(c.start)} – ${formatDM(c.end)}`;
+        return `<li><a href="${c.href}" target="_blank" class="course-name ${specialClass}">${c.course}</a><span class="course-date">${dateDisplay}</span></li>`;
+      }).join('');
+
+      // Special handling for "other" group to show location
+      if (g.id === 'other') {
+        const itemsWithLocation = list.map(c => {
+          const specialClass = specialCourses.includes(c.course) ? 'special-course-highlight' : '';
+          const dateDisplay = c.start === c.end ? formatDM(c.start) : `${formatDM(c.start)} – ${formatDM(c.end)}`;
+          return `<li>
+            <div class="course-title-group">
+              <a href="${c.href}" target="_blank" class="course-name ${specialClass}">${c.course}</a>
+              <span class="course-location">(${c.loc})</span>
+            </div>
+            <span class="course-date">${dateDisplay}</span>
+          </li>`;
+        }).join('');
+        const tileContent = `
+          <article id="tile-${g.id}" class="upcoming-tile">
+            <h3>${g.label}</h3>
+            <div class="tile-divider"></div>
+            <ul>${itemsWithLocation || '<li>Đang cập nhật…</li>'}</ul>
+          </article>`;
+        htmls.push(tileContent);
+      } else {
+        htmls.push(`
+          <article id="tile-${g.id}" class="upcoming-tile">
+            <h3>${g.label}</h3>
+            <div class="tile-divider"></div>
+            <ul>${items || '<li>Đang cập nhật…</li>'}</ul>
+          </article>`);
+      }
+    });
+    container.html(htmls.join(''));
+  }
+
+  /* ========================================================================
+   *  Init
+   * ======================================================================*/
+  $(async () => {
+    const allCourseData = await getData();
+
+    // Lọc trước tất cả dữ liệu để chỉ hiển thị các khóa học chưa kết thúc (end_date >= today)
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const parseDateForFilter = (dateStr) => {
+        if (!dateStr || dateStr.includes('--')) return null;
+        const [dd, mm, yyyy] = dateStr.split('/');
+        return new Date(yyyy, mm - 1, dd);
+    };
+    const courseData = allCourseData.filter(course => {
+      const endDate = parseDateForFilter(course.end);
+      // Giữ lại khóa học nếu ngày kết thúc của nó lớn hơn hoặc bằng hôm nay
+      return endDate ? endDate.getTime() >= today.getTime() : false;
+    });
+
+    fillCards(courseData);
+    renderHighlights(courseData);
+
+    // Initialize mobile scroll indicator
+    initMobileScrollIndicator();
+
+    const dt = $('#courses').DataTable({
+      data: courseData,
+      columns: [
+        { data: 'course' },
+        { data: 'speaker' },
+        { data: null }, // Placeholder for the combined date range
+        { data: 'loc' },
+        { data: 'mode' },
+        { data: 'start', visible: false }, // Hidden column for sorting
+        { data: 'end', visible: false } // Hidden column
+      ],
+      columnDefs: [
+        {
+          targets: 2, // The new "Thời gian" column
+          orderData: [5], // Sort this column using the 'start' date data (index 5)
+          render: function (data, type, row) {
+            const formatDM = d => {
+              if (!d || d.includes('--')) return '??/??';
+              const [dd, mm] = d.split('/');
+              return `${dd}/${mm}`;
+            };
+            return row.start === row.end
+              ? formatDM(row.start)
+              : `${formatDM(row.start)} - ${formatDM(row.end)}`;
+          }
+        },
+        { type: 'ddmmyyyy', targets: [5] }, // Apply date sorting to the hidden start column
+        {
+          targets: 3, /* Địa điểm: now at index 3 */
+          render: (data) => `${data} ${/^\+?\d/.test(data.trim()) ? `<a href="tel:${data.trim()}" class="phone-link" title="Gọi điện"><i class="fas fa-phone"></i></a>` : ''}`
+        },
+        { targets: 4, render: (d) => createModeBadge(d) } /* Hình thức: now at index 4 */
+      ],
+      createdRow: (row, data) => {
+        $(row).attr('data-href', data.href);
+        if (specialCourses.includes(data.course)) {
+          $('td:eq(0)', row).addClass('special-course-highlight');
+        }
+      },
+      order: [[2, 'asc']], // Sort by the new "Thời gian" column
+      pageLength: -1, // Hiển thị tất cả entries
+      lengthMenu: [], // Ẩn menu length
+      dom: 'rt', // Chỉ hiển thị table và processing
+      info: false, // Ẩn thông tin số lượng entries
+      paging: false, // Ẩn phân trang
+      autoWidth: false,
+      initComplete: function() {
+        const isDesktop = window.innerWidth > 1200;
+        const topValue = isDesktop ? '0px' : '80px';
+        
+        $('#courses thead th').css({
+          'position': 'sticky',
+          'top': topValue,
+          'z-index': '50',
+          'background': '#2EC7BE', /* Màu xanh ngọc nhạt */
+          'box-shadow': '0 2px 2px -1px rgba(0, 0, 0, 0.4)'
+        });
+      },
+      drawCallback: function() {
+        const isDesktop = window.innerWidth > 1200;
+        const topValue = isDesktop ? '0px' : '80px';
+        
+        $('#courses thead th').css({
+          'position': 'sticky',
+          'top': topValue,
+          'z-index': '50',
+          'background': '#2EC7BE' /* Màu xanh ngọc nhạt */
+        });
+      }
+    });
+
+    /* ▸ Global search: bỏ dấu + đồng bộ hai view */
+    $('#globalSearch').on('input', debounce(function () {
+      dt.search('').draw(); // Xóa tìm kiếm mặc định để sử dụng plugin tùy chỉnh
+    }));
+
+    /* ▸ Handle resize for sticky positioning */
+    $(window).on('resize', debounce(function() {
+      const isDesktop = window.innerWidth > 1200;
+      const topValue = isDesktop ? '0px' : '80px';
+      
+      $('#courses thead th').css('top', topValue);
+      $('.dataTables_scrollHead').css('top', topValue);
+    }, 250));
+
+    dt.on('draw.dt', () => {
+      fillCards(dt.rows({ search: 'applied' }).data().toArray());
+      // Update scroll indicator after cards are refreshed
+      if (window.updateMobileScrollIndicator) {
+        setTimeout(window.updateMobileScrollIndicator, 100);
+      }
+    });
+
+    /* ▸ row click to open */
+    $('#courses tbody').on('click', 'tr', function (e) {
+      if ($(e.target).closest('a').length) return; /* avoid when clicking phone icon */
+      const href = $(this).data('href');
+      if (href && href !== '#') window.open(href, '_blank');
+    });
+
+    /* ========================================================================
+     *  Mobile Scroll Indicator Logic
+     * ======================================================================*/
+    function initMobileScrollIndicator() {
+      const $indicator = $('#mobileScrollIndicator');
+      const $mobileContainer = $('#mobileCardContainer');
+      let isIndicatorVisible = false;
+      let hideTimeout;
+
+      // Kiểm tra xem có phải mobile view không
+      function isMobileView() {
+        return window.innerWidth <= 1200;
+      }
+
+      // Kiểm tra xem có đủ nội dung để scroll không
+      function hasScrollableContent() {
+        return document.documentElement.scrollHeight > window.innerHeight + 100; // Thêm buffer 100px
+      }
+
+      // Kiểm tra xem đã scroll gần đến cuối chưa
+      function isNearBottom() {
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+        const windowHeight = window.innerHeight;
+        const documentHeight = document.documentElement.scrollHeight;
+        const distanceFromBottom = documentHeight - (scrollTop + windowHeight);
+        
+        // Ẩn indicator khi còn cách đáy 150px
+        return distanceFromBottom <= 150;
+      }
+
+      // Hiển thị indicator với animation smooth
+      function showIndicator() {
+        if (isIndicatorVisible) return;
+        
+        $indicator.removeClass('hiding').addClass('visible');
+        isIndicatorVisible = true;
+        
+        // Clear any existing hide timeout
+        if (hideTimeout) {
+          clearTimeout(hideTimeout);
+          hideTimeout = null;
+        }
+      }
+
+      // Ẩn indicator với animation smooth
+      function hideIndicator() {
+        if (!isIndicatorVisible) return;
+        
+        $indicator.removeClass('visible').addClass('hiding');
+        isIndicatorVisible = false;
+        
+        // Hoàn toàn ẩn element sau khi animation kết thúc
+        hideTimeout = setTimeout(() => {
+          $indicator.removeClass('hiding');
+        }, 300); // Match với animation duration
+      }
+
+      // Main logic để quyết định hiển thị/ẩn indicator
+      function updateIndicatorVisibility() {
+        if (!isMobileView()) {
+          hideIndicator();
+          return;
+        }
+
+        // Chỉ hiển thị khi:
+        // 1. Đang ở mobile view
+        // 2. Có đủ nội dung để scroll
+        // 3. Chưa scroll gần đến cuối
+        // 4. Mobile container có cards
+        if (hasScrollableContent() && !isNearBottom() && $mobileContainer.children().length > 0) {
+          showIndicator();
+        } else {
+          hideIndicator();
+        }
+      }
+
+      // Throttle scroll events để optimize performance
+      let scrollTimeout;
+      function throttledScrollHandler() {
+        if (scrollTimeout) return;
+        
+        scrollTimeout = setTimeout(() => {
+          updateIndicatorVisibility();
+          scrollTimeout = null;
+        }, 16); // ~60fps
+      }
+
+      // Event listeners
+      $(window).on('scroll', throttledScrollHandler);
+      $(window).on('resize', debounce(updateIndicatorVisibility, 250));
+
+      // Initial check
+      updateIndicatorVisibility();
+
+      // Expose update function globally để có thể gọi từ bên ngoài
+      window.updateMobileScrollIndicator = updateIndicatorVisibility;
+    }
+  });
+</script>
+</body>
+</html>
