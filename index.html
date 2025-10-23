@@ -934,23 +934,12 @@
       .replace(/[^\w\s]/g, '')         // bỏ ký tự lạ (₫, ., , ...)
       .toLowerCase();
 
-  const VND = n => {
-    if (typeof n === 'string') return n; // Handle "Liên hệ", "Miễn phí", etc.
-    return (n || 0).toLocaleString('vi-VN') + ' vnđ';
-  };
-  const parseNum = t => {
-    const num = parseInt(String(t).replace(/[^\d]/g, '')) || 0;
-    // Keep original string if it's not a standard number
-    if (typeof t === 'string' && !/^\d+(\.\d{3})*$/.test(t.replace(/\D/g, ''))) {
-      return t;
-    }
-    return num;
-  };
-
+  const VND = n => (n || 0).toLocaleString('vi-VN') + ' vnđ';
+  const parseNum = t => parseInt(String(t).replace(/[^\d]/g, '')) || 0;
 
   const createModeBadge = mode => {
     const online = /online|zoom|trực tuyến/i.test(mode);
-    const hybrid = /hybrid|kết hợp/i.test(mode);
+    const hybrid = /hybrid|kết hợp/i.test(mode) || /offline và zoom/i.test(mode);
     let cls, icon;
     if (online)      [cls, icon] = ['online',  'fa-video'];
     else if (hybrid) [cls, icon] = ['hybrid',  'fa-people-arrows'];
@@ -964,7 +953,7 @@
     const [dd, mm, yyyy] = d.split('/') || [];
     return new Date(yyyy, mm - 1, dd).getTime() || 0;
   };
-  $.fn.dataTable.ext.type.order['vnd-pre'] = t => typeof t === 'string' ? 0 : parseNum(t); // Treat non-numeric fees as 0 for sorting
+  $.fn.dataTable.ext.type.order['vnd-pre'] = t => parseNum(t);
 
   /* ----------------------------------------------------------------------
    *  🔍  Accent-insensitive, number-friendly SEARCH plug-in
@@ -974,14 +963,9 @@
     if (!query) return true;
 
     // Kiểm tra từng cột của dữ liệu gốc
-    // rowData ở đây đã ở định dạng cuối cùng (start, end, speaker, course, etc.)
     return Object.values(rowData).some(val => {
-      // Nếu là học phí dạng string ("Liên hệ", "Miễn phí"), vẫn tìm kiếm trên chuỗi đó
-      if (typeof val === 'string' && (val === 'Liên hệ' || val === 'Miễn phí' || val === 'TÙY HỶ')) {
-        return stripVN(val).includes(query);
-      }
       if (typeof val === 'number') {
-        // Xử lý số tiền (fee)
+        // Xử lý số tiền (tuition) hoặc các giá trị số
         return stripVN(VND(val)).includes(query) || String(val).includes(query);
       }
       // Xử lý chuỗi (bao gồm HTML)
@@ -994,147 +978,117 @@
    *  Data fetching
    * ======================================================================*/
   async function getData() {
+    let rawData;
     try {
       const res = await fetch('https://webhook.gnh.vn/webhook/event_info', { cache: 'no-store' });
       if (!res.ok) throw new Error(res.status);
-      const raw = await res.json(); // raw is an array of objects from the webhook
-
-      return raw
-        .filter(x => x.course && x.speaker) // Keep this filter for API data
-        .map(x => {
-          let processedFee;
-          // Use 'tuition' from API directly, as it's the expected field
-          if (x.tuition === "Liên hệ" || x.tuition === "liên hệ" || x.tuition === "MIỄN PHÍ" || x.tuition === "TÙY HỶ") {
-            processedFee = x.tuition; // Keep as string for these special cases
-          } else if (!x.tuition || x.tuition === "" || x.tuition === null) {
-            processedFee = "--";
-          } else {
-            processedFee = parseNum(x.tuition); // Parse number for numeric values
-          }
-
-          // Assume x.href is the primary link from the API for the main object
-          // If the API provided specific fields like 'Chi tiết (link)' or 'Đăng ký (link)'
-          // they would need to be handled here. For now, sticking to x.href as the main one.
-          const finalHref = x.href || '#';
-
-          return {
-            start: x.start_date || '--/--/----',
-            end: x.end_date || '--/--/----',
-            speaker: x.speaker,
-            course: x.course,
-            loc: x.location || 'N/A',
-            mode: x.learning_mode || 'N/A',
-            fee: processedFee,
-            href: finalHref,
-            thumbnail: x.thumbnail || '',
-            description: x.description || '',
-            categories: x.categories || ''
-          };
-        });
+      rawData = await res.json();
     } catch (err) {
-      console.warn('API lỗi, dùng dữ liệu dự phòng:', err);
-      // Dữ liệu dự phòng đã được chuyển đổi SẴN sang định dạng mong muốn
-      // (start, end, speaker, course, loc, mode, fee, href, thumbnail, description, categories)
-      return [
-        {
-          start: '03/08/2025', end: '03/08/2025', speaker: 'Coach Thắng Huyền Đức', course: 'Workshop Đội ngũ', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Hành trình Doanh nghiệp', fee: 'Liên hệ', href: 'https://bke.edu.vn/wsthucchien', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/screenshot_1739867654-20250218083501-wdo7_.png', description: 'Workshop 1 ngày Thực chiến tại Hà Nội - HCM - Dành cho chủ doanh nghiệp và đội ngũ'
-        },
-        {
-          start: '16/08/2025', end: '17/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh Kiến 1', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Hành trình 3 Gốc', fee: 1900000, href: 'https://bke.edu.vn/chanhkien1', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg', description: 'Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình'
-        },
-        {
-          start: '27/09/2025', end: '28/09/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh Kiến 2', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Hành trình 3 Gốc', fee: 2900000, href: 'https://bke.edu.vn/chanhkien2', thumbnail: 'https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/ck2-01-20220214103634.jpg', description: 'Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình'
-        },
-        {
-          start: '02/07/2025', end: '02/07/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thuật dụng nhân', loc: 'Hà Nội', mode: 'Offline', categories: 'Hành trình Doanh nghiệp', fee: 499000, href: 'https://bke.edu.vn/dungnhan', thumbnail: '', description: ''
-        },
-        {
-          start: '16/07/2025', end: '16/07/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thuật dụng nhân', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Hành trình Doanh nghiệp', fee: 499000, href: 'https://bke.edu.vn/dungnhan', thumbnail: '', description: ''
-        },
-        {
-          start: '08/07/2025', end: '10/07/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thấu hiểu nhân tâm', loc: 'Zoom', mode: 'Zoom', categories: 'Lớp học Gieo duyên cộng đồng', fee: 399000, href: 'https://bke.edu.vn/nhantam/', thumbnail: '', description: ''
-        },
-        {
-          start: '05/07/2025', end: '09/07/2025', speaker: 'Cô Nguyễn Đoàn Kim Sơn', course: 'Lãnh đạo chính mình', loc: 'Zoom', mode: 'Zoom', categories: 'Lãnh đạo chính mình - Tỉnh thức', fee: 1500000, href: 'https://gnh.vn/LDCM_K32', thumbnail: '', description: ''
-        },
-        {
-          start: '21/09/2025', end: '21/09/2025', speaker: 'Coach Thắng Huyền Đức', course: 'Leader 10x', loc: 'Zoom', mode: 'Zoom', categories: 'Hành trình Doanh nghiệp', fee: 30000000, href: 'https://bke.edu.vn/10x', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/leader-10x-20250512041107-go4gq.png', description: 'Hành trình chuyển hóa 10 tuần để khám phá và lãnh đạo chính bản thân, giải phóng niềm tin giới hạn, xây dựng môi trường sống tích cực, và sống cuộc đời ý nghĩa.'
-        },
-        {
-          start: '04/10/2025', end: '05/10/2025', speaker: 'Thầy Trần Việt Quân', course: 'Nhân Tướng Học', loc: 'Hà Nội', mode: 'Offline', categories: 'Đọc vị Giải mã sự nghiệp', fee: 6900000, href: 'https://bke.edu.vn/nhantuong', thumbnail: 'https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg', description: 'Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người'
-        },
-        {
-          start: '30/07/2025', end: '30/07/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thấu hiểu nhân tâm', loc: 'Hà Nội', mode: 'Offline', categories: 'Đọc vị Giải mã sự nghiệp', fee: 499000, href: 'https://bke.edu.vn/nhantamoff', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/share-web-01-20221214070703-rnux3.jpg', description: ''
-        },
-        {
-          start: '13/08/2025', end: '13/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thấu hiểu nhân tâm', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Đọc vị Giải mã sự nghiệp', fee: 499000, href: 'https://bke.edu.vn/nhantamoff', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/share-web-01-20221214070703-rnux3.jpg', description: ''
-        },
-        {
-          start: '11/10/2025', end: '12/10/2025', speaker: 'Thầy Trần Việt Quân', course: 'Xây Dựng Đội Ngũ', loc: 'Hà Nội', mode: 'Offline', categories: 'Hành trình Doanh nghiệp', fee: 6900000, href: 'https://bke.edu.vn/team', thumbnail: 'https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/team-20241016055944-_2iwu.png', description: 'Một DN mạnh không cần những con người rời rạc. Một doanh nghiệp mạnh cần một đội ngũ mạnh & gắn kết'
-        },
-        {
-          start: '18/10/2025', end: '19/10/2025', speaker: 'Thầy Trần Việt Quân', course: 'Nhân Tướng Học', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Đọc vị Giải mã sự nghiệp', fee: 6900000, href: 'https://bke.edu.vn/nhantuong', thumbnail: 'https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg', description: 'Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người'
-        },
-        {
-          start: '08/09/2025', end: '31/10/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh kiến Học Hiểu Hành', loc: 'Zoom', mode: 'Zoom', categories: 'Hành trình 3 Gốc', fee: 3200000, href: 'https://bke.edu.vn/ck3h', thumbnail: 'https://w.ladicdn.com/s289x162/5e8449c2481e7d0f79868b5d/z5688760085770_7376ba05524391bcdec81d8e64a63e74-20240801072109-tv3h7.jpg', description: 'Nắm trọn vẹn bí quyết được thầy Trần Việt Quân đúc kết suốt 25 năm Thực Hành Chuyển Hóa ngay tại lớp'
-        },
-        {
-          start: '31/07/2025', end: '31/07/2025', speaker: 'Thầy Trần Việt Quân', course: 'Gieo duyên cộng đồng', loc: 'Hà Tĩnh', mode: 'Offline', categories: 'Lớp học Gieo duyên cộng đồng', fee: 'Miễn phí', href: 'https://zalo.me/g/uarrqk708', thumbnail: '', description: ''
-        },
-        {
-          start: '01/08/2025', end: '01/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Gieo duyên cộng đồng', loc: 'Thanh Hóa', mode: 'Offline', categories: 'Lớp học Gieo duyên cộng đồng', fee: 'Miễn phí', href: 'https://zalo.me/g/dslhif627', thumbnail: '', description: ''
-        },
-        {
-          start: '05/08/2025', end: '07/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thấu hiểu nhân tâm (Tối)', loc: 'Zoom', mode: 'Zoom', categories: 'Lớp học Gieo duyên cộng đồng', fee: 399000, href: 'https://bke.edu.vn/nhantam/', thumbnail: '', description: ''
-        },
-        {
-          start: '26/08/2025', end: '28/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thấu hiểu nhân tâm (Sáng)', loc: 'Zoom', mode: 'Zoom', categories: 'Lớp học Gieo duyên cộng đồng', fee: 399000, href: 'https://bke.edu.vn/nhantam/', thumbnail: '', description: ''
-        },
-        {
-          start: '11/08/2025', end: '11/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Gieo duyên cộng đồng', loc: 'Quảng Trị', mode: 'Offline', categories: 'Lớp học Gieo duyên cộng đồng', fee: 'Miễn phí', href: 'https://ybai.co/gjwdvp5847', thumbnail: '', description: ''
-        },
-        {
-          start: '06/09/2025', end: '07/09/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh Kiến 1', loc: 'Hà Nội', mode: 'Offline', categories: 'Hành trình 3 Gốc', fee: 1900000, href: 'https://bke.edu.vn/chanhkien1', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg', description: 'Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình'
-        },
-        {
-          start: '09/08/2025', end: '10/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Ngày hội Giáo viên 3 gốc', loc: 'Hà Nội', mode: 'Offline', categories: 'Lớp học Gieo duyên cộng đồng', fee: 500000, href: 'https://bke.edu.vn/giaovien3goc', thumbnail: '', description: ''
-        },
-        {
-          start: '23/08/2025', end: '24/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Ngày hội Giáo viên 3 gốc', loc: 'Vabis Vũng Tàu', mode: 'Offline', categories: 'Lớp học Gieo duyên cộng đồng', fee: 500000, href: 'https://bke.edu.vn/giaovien3goc', thumbnail: '', description: ''
-        },
-        {
-          start: '25/10/2025', end: '26/10/2025', speaker: 'Thầy Trần Việt Quân - NSKT', course: 'Xây Dựng Đội Ngũ', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Hành trình Doanh nghiệp', fee: 6900000, href: 'https://bke.edu.vn/team', thumbnail: 'https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/team-20241016055944-_2iwu.png', description: 'Một DN mạnh không cần những con người rời rạc. Một doanh nghiệp mạnh cần một đội ngũ mạnh & gắn kết'
-        },
-        {
-          start: '19/08/2025', end: '21/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Thấu hiểu nhân tâm (Tối)', loc: 'Zoom', mode: 'Zoom', categories: 'Lớp học Gieo duyên cộng đồng', fee: 399000, href: 'https://bke.edu.vn/nhantam/', thumbnail: '', description: ''
-        },
-        {
-          start: '12/08/2025', end: '14/08/2025', speaker: 'Thầy Trần Việt Quân', course: 'Bí mật tình yêu hôn nhân (Tối)', loc: 'Zoom', mode: 'Zoom', categories: 'Lớp học Gieo duyên cộng đồng', fee: 'MIỄN PHÍ', href: 'https://bke.edu.vn/honnhanbenvung/', thumbnail: '', description: ''
-        },
-        {
-          start: '20/09/2025', end: '21/09/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh Kiến 1', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Hành trình 3 Gốc', fee: 1900000, href: 'https://bke.edu.vn/chanhkien1', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg', description: 'Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình'
-        },
-        {
-          start: '09/09/2025', end: '11/09/2025', speaker: 'Thầy Trần Việt Quân', course: 'Bí mật tình yêu hôn nhân (Tối)', loc: 'Zoom', mode: 'Zoom', categories: 'Lớp học Gieo duyên cộng đồng', fee: 'MIỄN PHÍ', href: 'https://bke.edu.vn/honnhanbenvung/', thumbnail: '', description: ''
-        },
-        {
-          start: '17/09/2025', end: '17/09/2025', speaker: 'Thầy Trần Việt Quân', course: 'Gieo duyên cộng đồng', loc: 'Đà Nẵng', mode: 'Offline', categories: 'Dạy con', fee: 'MIỄN PHÍ', href: 'https://gnh.vn/dayconthanhtai-danang', thumbnail: '', description: ''
-        },
-        {
-          start: '18/09/2025', end: '18/09/2025', speaker: 'Thầy Trần Việt Quân', course: 'Gieo duyên cộng đồng', loc: 'Đà Nẵng', mode: 'Offline', categories: 'Hành trình Doanh nghiệp', fee: 'TÙY HỶ', href: 'https://gnh.vn/Dky_LanhDaoTinhThuc', thumbnail: '', description: ''
-        },
-        {
-          start: '08/11/2025', end: '09/11/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh Kiến 1', loc: 'Hà Nội', mode: 'Offline', categories: 'Hành trình 3 Gốc', fee: 1900000, href: 'https://bke.edu.vn/chanhkien1', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg', description: 'Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình'
-        },
-        {
-          start: '13/12/2025', end: '14/12/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh Kiến 2', loc: 'Hà Nội', mode: 'Offline', categories: 'Hành trình 3 Gốc', fee: 2900000, href: 'https://bke.edu.vn/chanhkien2', thumbnail: 'https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/ck2-01-20220214103634.jpg', description: 'Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình'
-        },
-        {
-          start: '22/11/2025', end: '23/11/2025', speaker: 'Thầy Trần Việt Quân', course: 'Chánh Kiến 1', loc: 'Hồ Chí Minh', mode: 'Offline', categories: 'Hành trình 3 Gốc', fee: 1900000, href: 'https://bke.edu.vn/chanhkien1', thumbnail: 'https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg', description: 'Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình'
-        }
+      console.warn('API lỗi, dùng dữ liệu demo:', err);
+      // Hardcoded fallback data
+      rawData = [
+        {"start_date": "05/06/2025", "end_date": "06/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Hội Khai Minh 3 Gốc", "location": "Hà Nội", "learning_mode": "Offline và Zoom", "categories": "Hành trình 3 Gốc", "tuition": "Liên hệ", "href": "https://bke.edu.vn/hoikhaiminh", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/screenshot_1732285943-20241123021730-ktan9.png", "description": "Một chương trình 12 tháng đồng hành kết hợp online và offline, giúp bạn chuyển hóa tâm thức theo chiều sâu"},
+        {"start_date": "07/06/2025", "end_date": "08/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 2", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "2.900.000", "href": "https://bke.edu.vn/chanhkien2", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/ck2-01-20220214103634.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "11/06/2025", "end_date": "12/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Rèn Tâm Vững Vàng", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Lãnh đạo chính mình - Tỉnh thức", "tuition": "11.900.000", "href": "https://bke.edu.vn/rentam", "thumbnail": "https://w.ladicdn.com/s600x500/5e8449c2481e7d0f79868b5d/rentam-20250505024647-oievi.png", "description": "Bí mật trí tuệ cảm xúc ứng dụng - bình an trong giông bão. Học tại lớp 2 ngày offline + 6 tuần online & thực hành liên tục trong đời sống"},
+        {"start_date": "14/06/2025", "end_date": "15/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanh-kien-1#dang_ky", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình."},
+        {"start_date": "17/06/2025", "end_date": "18/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Rèn Tâm Vững Vàng", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Lãnh đạo chính mình - Tỉnh thức", "tuition": "11.900.000", "href": "https://bke.edu.vn/rentam", "thumbnail": "https://w.ladicdn.com/s600x500/5e8449c2481e7d0f79868b5d/rentam-20250505024647-oievi.png", "description": "Bí mật trí tuệ cảm xúc ứng dụng - bình an trong giông bão. Học tại lớp 2 ngày offline + 6 tuần online & thực hành liên tục trong đời sống"},
+        {"start_date": "19/07/2025", "end_date": "19/07/2025", "speaker": "Thầy Trần Việt Quân - NSKT", "course": "Chánh Kiến Học Hiểu Hành", "location": "Zoom", "learning_mode": "Zoom", "categories": "Hành trình 3 Gốc", "tuition": "3.200.000", "href": "https://bke.edu.vn/ck3h", "thumbnail": "https://w.ladicdn.com/s289x162/5e8449c2481e7d0f79868b5d/z5688760085770_7376ba05524391bcdec81d8e64a63e74-20240801072109-tv3h7.jpg", "description": "Nắm trọn vẹn bí quyết được thầy Trần Việt Quân đúc kết suốt 25 năm Thực Hành Chuyển Hóa ngay tại lớp"},
+        {"start_date": "19/06/2025", "end_date": "22/06/2025", "speaker": "Cô Nguyễn Đoàn Kim Sơn", "course": "Hạnh Phúc Tuổi Già", "location": "LHP Đắk Nông", "learning_mode": "Offline", "categories": "Lãnh đạo chính mình - Tỉnh thức", "tuition": "4.500.000", "href": "https://bke.edu.vn/hptuoigia", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/z6059056050082_25a51c6f99ff05084fc31d6980e629be-20241125075352-h8dod.jpg", "description": "- Chánh kiến về ung thư\n- Giải quyết nội kết cho các cụ\n- Sức khoẻ Thuận tự nhiên"},
+        {"start_date": "20/06/2025", "end_date": "20/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Hội Khai Minh 3 Gốc", "location": "Hồ Chí Minh", "learning_mode": "Offline và Zoom", "categories": "Hành trình 3 Gốc", "tuition": "Liên hệ", "href": "https://bke.edu.vn/hoikhaiminh", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/screenshot_1732285943-20241123021730-ktan9.png", "description": "Một chương trình 12 tháng đồng hành kết hợp online và offline, giúp bạn chuyển hóa tâm thức theo chiều sâu"},
+        {"start_date": "20/06/2025", "end_date": "20/06/2025", "speaker": "Thầy Trần Việt Quân - NSKT", "course": "Rèn Tâm Vững Vàng", "location": "Zoom", "learning_mode": "Zoom", "categories": "Hành trình 3 Gốc", "tuition": "", "href": "https://bke.edu.vn/rentam", "thumbnail": "https://w.ladicdn.com/s600x500/5e8449c2481e7d0f79868b5d/rentam-20250505024647-oievi.png", "description": "Bí mật trí tuệ cảm xúc ứng dụng - bình an trong giông bão. Học tại lớp 2 ngày offline + 6 tuần online & thực hành liên tục trong đời sống"},
+        {"start_date": "21/06/2025", "end_date": "22/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 2", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "2.900.000", "href": "https://bke.edu.vn/chanhkien2", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/ck2-01-20220214103634.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "30/06/2025", "end_date": "30/06/2025", "speaker": "Thầy Trần Việt Quân", "course": "Rèn Trí Sáng Suốt", "location": "Zoom", "learning_mode": "Offline và Zoom", "categories": "Khóa học Online", "tuition": "19.900.000", "href": "https://bke.edu.vn/rentrisangsuot", "thumbnail": "https://w.ladicdn.com/s293x164/5e8449c2481e7d0f79868b5d/thumbnail-video-20230414100628-h_io4.jpg", "description": "Hành trình rèn trí tuệ. Online zoom + 2 đợi áp suất offline & rèn luyện chuyển hóa cùng nhóm bạn tốt"},
+        {"start_date": "05/07/2025", "end_date": "06/07/2025", "speaker": "Thầy Trần Việt Quân", "course": "Nhân Tướng Học", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/nhantuong", "thumbnail": "https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg", "description": "Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người"},
+        {"start_date": "11/07/2025", "end_date": "15/07/2025", "speaker": "Cô Nguyễn Đoàn Kim Sơn", "course": "Hạnh Phúc Tuổi Già", "location": "LHP Phú Quốc", "learning_mode": "Offline", "categories": "Lãnh đạo chính mình - Tỉnh thức", "tuition": "3.500.000", "href": "https://bke.edu.vn/hptuoigia", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/z6059056050082_25a51c6f99ff05084fc31d6980e629be-20241125075352-h8dod.jpg", "description": "- Chánh kiến về ung thư\n- Giải quyết nội kết cho các cụ\n- Sức khoẻ Thuận tự nhiên"},
+        {"start_date": "12/07/2025", "end_date": "13/07/2025", "speaker": "Thầy Trần Việt Quân - NSKT", "course": "Xây Dựng Đội Ngũ", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/team", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/team-20241016055944-_2iwu.png", "description": "Một DN mạnh không cần những con người rời rạc. Một doanh nghiệp mạnh cần một đội ngũ mạnh & gắn kết"},
+        {"start_date": "19/07/2025", "end_date": "20/07/2025", "speaker": "Thầy Trần Việt Quân", "course": "Nhân Tướng Học", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/nhantuong", "thumbnail": "https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg", "description": "Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người"},
+        {"start_date": "26/07/2025", "end_date": "27/07/2025", "speaker": "Thầy Trần Việt Quân - NSKT", "course": "Xây Dựng Đội Ngũ", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/team", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/team-20241016055944-_2iwu.png", "description": "Một DN mạnh không cần những con người rời rạc. Một doanh nghiệp mạnh cần một đội ngũ mạnh & gắn kết"},
+        {"start_date": "02/08/2025", "end_date": "03/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanh-kien-1#dang_ky", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "15/06/2025", "end_date": "15/06/2025", "speaker": "Coach Thắng Huyền Đức", "course": "Leader 10x", "location": "Zoom", "learning_mode": "Zoom", "categories": "Hành trình Doanh nghiệp", "tuition": "30.000.000", "href": "https://bke.edu.vn/10x", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/leader-10x-20250512041107-go4gq.png", "description": "Hành trình chuyển hóa 10 tuần để khám phá và lãnh đạo chính bản thân, giải phóng niềm tin giới hạn, xây dựng môi trường sống tích cực, và sống cuộc đời ý nghĩa."},
+        {"start_date": "20/07/2025", "end_date": "20/07/2025", "speaker": "Coach Thắng Huyền Đức", "course": "Workshop Đội ngũ", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "Liên hệ", "href": "https://bke.edu.vn/wsthucchien", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/screenshot_1739867654-20250218083501-wdo7_.png", "description": "Workshop 1 ngày Thực chiến tại Hà Nội - HCM - Dành cho chủ doanh nghiệp và đội ngũ"},
+        {"start_date": "03/08/2025", "end_date": "03/08/2025", "speaker": "Coach Thắng Huyền Đức", "course": "Workshop Đội ngũ", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "Liên hệ", "href": "https://bke.edu.vn/wsthucchien", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/screenshot_1739867654-20250218083501-wdo7_.png", "description": "Workshop 1 ngày Thực chiến tại Hà Nội - HCM - Dành cho chủ doanh nghiệp và đội ngũ"},
+        {"start_date": "16/08/2025", "end_date": "17/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanhkien1", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "27/09/2025", "end_date": "28/09/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 2", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "2.900.000", "href": "https://bke.edu.vn/chanhkien2", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/ck2-01-20220214103634.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "02/07/2025", "end_date": "02/07/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thuật dụng nhân", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "499000", "href": "https://bke.edu.vn/dungnhan", "thumbnail": "", "description": ""},
+        {"start_date": "16/07/2025", "end_date": "16/07/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thuật dụng nhân", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "499000", "href": "https://bke.edu.vn/dungnhan", "thumbnail": "", "description": ""},
+        {"start_date": "08/07/2025", "end_date": "10/07/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm", "location": "Zoom", "learning_mode": "Zoom", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "399000", "href": "https://bke.edu.vn/nhantam/", "thumbnail": "", "description": ""},
+        {"start_date": "05/07/2025", "end_date": "09/07/2025", "speaker": "Cô Nguyễn Đoàn Kim Sơn", "course": "Lãnh đạo chính mình", "location": "Zoom", "learning_mode": "Zoom", "categories": "Lãnh đạo chính mình - Tỉnh thức", "tuition": "1500000", "href": "https://gnh.vn/LDCM_K32", "thumbnail": "", "description": ""},
+        {"start_date": "21/09/2025", "end_date": "21/09/2025", "speaker": "Coach Thắng Huyền Đức", "course": "Leader 10x", "location": "Zoom", "learning_mode": "Zoom", "categories": "Hành trình Doanh nghiệp", "tuition": "30.000.000", "href": "https://bke.edu.vn/10x", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/leader-10x-20250512041107-go4gq.png", "description": "Hành trình chuyển hóa 10 tuần để khám phá và lãnh đạo chính bản thân, giải phóng niềm tin giới hạn, xây dựng môi trường sống tích cực, và sống cuộc đời ý nghĩa."},
+        {"start_date": "04/10/2025", "end_date": "05/10/2025", "speaker": "Thầy Trần Việt Quân", "course": "Nhân Tướng Học", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/nhantuong", "thumbnail": "https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg", "description": "Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người"},
+        {"start_date": "30/07/2025", "end_date": "30/07/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "499.000", "href": "https://bke.edu.vn/nhantamoff", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/share-web-01-20221214070703-rnux3.jpg", "description": ""},
+        {"start_date": "13/08/2025", "end_date": "13/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "499.000", "href": "https://bke.edu.vn/nhantamoff", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/share-web-01-20221214070703-rnux3.jpg", "description": ""},
+        {"start_date": "08/10/2025", "end_date": "09/10/2025", "speaker": "Thầy Trần Việt Quân", "course": "Xây Dựng Đội Ngũ", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/team", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/team-20241016055944-_2iwu.png", "description": "Một DN mạnh không cần những con người rời rạc. Một doanh nghiệp mạnh cần một đội ngũ mạnh & gắn kết"},
+        {"start_date": "18/10/2025", "end_date": "19/10/2025", "speaker": "Thầy Trần Việt Quân", "course": "Nhân Tướng Học", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/nhantuong", "thumbnail": "https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg", "description": "Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người"},
+        {"start_date": "08/09/2025", "end_date": "31/10/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh kiến Học Hiểu Hành", "location": "Zoom", "learning_mode": "Zoom", "categories": "Hành trình 3 Gốc", "tuition": "3.200.000", "href": "https://bke.edu.vn/ck3h", "thumbnail": "https://w.ladicdn.com/s289x162/5e8449c2481e7d0f79868b5d/z5688760085770_7376ba05524391bcdec81d8e64a63e74-20240801072109-tv3h7.jpg", "description": "Nắm trọn vẹn bí quyết được thầy Trần Việt Quân đúc kết suốt 25 năm Thực Hành Chuyển Hóa ngay tại lớp"},
+        {"start_date": "31/07/2025", "end_date": "31/07/2025", "speaker": "Thầy Trần Việt Quân", "course": "Gieo duyên cộng đồng", "location": "Hà Tĩnh", "learning_mode": "Offline", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "Miễn phí", "href": "https://zalo.me/g/uarrqk708", "thumbnail": "", "description": ""},
+        {"start_date": "01/08/2025", "end_date": "01/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Gieo duyên cộng đồng", "location": "Thanh Hóa", "learning_mode": "Offline", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "Miễn phí", "href": "https://zalo.me/g/dslhif627", "thumbnail": "", "description": ""},
+        {"start_date": "05/08/2025", "end_date": "07/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm (Tối)", "location": "Zoom", "learning_mode": "Zoom", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "399000", "href": "https://bke.edu.vn/nhantam/", "thumbnail": "", "description": ""},
+        {"start_date": "26/08/2025", "end_date": "28/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm (Sáng)", "location": "Zoom", "learning_mode": "Zoom", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "399000", "href": "https://bke.edu.vn/nhantam/", "thumbnail": "", "description": ""},
+        {"start_date": "11/08/2025", "end_date": "11/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Gieo duyên cộng đồng", "location": "Quảng Trị", "learning_mode": "Offline", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "Miễn phí", "href": "https://ybai.co/gjwdvp5847", "thumbnail": "", "description": ""},
+        {"start_date": "06/09/2025", "end_date": "07/09/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanhkien1", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "09/08/2025", "end_date": "10/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Ngày hội Giáo viên 3 gốc", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "500000", "href": "https://bke.edu.vn/giaovien3goc", "thumbnail": "", "description": ""},
+        {"start_date": "23/08/2025", "end_date": "24/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Ngày hội Giáo viên 3 gốc", "location": "Vabis Vũng Tàu", "learning_mode": "Offline", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "500000", "href": "https://bke.edu.vn/giaovien3goc", "thumbnail": "", "description": ""},
+        {"start_date": "29/10/2025", "end_date": "30/10/2025", "speaker": "Thầy Trần Việt Quân - NSKT", "course": "Xây Dựng Đội Ngũ", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/team", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/team-20241016055944-_2iwu.png", "description": "Một DN mạnh không cần những con người rời rạc. Một doanh nghiệp mạnh cần một đội ngũ mạnh & gắn kết"},
+        {"start_date": "19/08/2025", "end_date": "21/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm (Tối)", "location": "Zoom", "learning_mode": "Zoom", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "399000", "href": "https://bke.edu.vn/nhantam/", "thumbnail": "", "description": ""},
+        {"start_date": "12/08/2025", "end_date": "14/08/2025", "speaker": "Thầy Trần Việt Quân", "course": "Bí mật tình yêu hôn nhân (Tối)", "location": "Zoom", "learning_mode": "Zoom", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "MIỄN PHÍ", "href": "https://bke.edu.vn/honnhanbenvung/", "thumbnail": "", "description": ""},
+        {"start_date": "20/09/2025", "end_date": "21/09/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanhkien1", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "09/09/2025", "end_date": "11/09/2025", "speaker": "Thầy Trần Việt Quân", "course": "Bí mật tình yêu hôn nhân (Tối)", "location": "Zoom", "learning_mode": "Zoom", "categories": "Lớp học Gieo duyên cộng đồng", "tuition": "MIỄN PHÍ", "href": "https://bke.edu.vn/honnhanbenvung/", "thumbnail": "", "description": ""},
+        {"start_date": "17/09/2025", "end_date": "17/09/2025", "speaker": "Thầy Trần Việt Quân", "course": "Gieo duyên cộng đồng", "location": "Đà Nẵng", "learning_mode": "Offline", "categories": "Dạy con", "tuition": "MIỄN PHÍ", "href": "https://gnh.vn/dayconthanhtai-danang", "thumbnail": "", "description": ""},
+        {"start_date": "18/09/2025", "end_date": "18/09/2025", "speaker": "Thầy Trần Việt Quân", "course": "Gieo duyên cộng đồng", "location": "Đà Nẵng", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "TÙY HỶ", "href": "https://gnh.vn/Dky_LanhDaoTinhThuc", "thumbnail": "", "description": ""},
+        {"start_date": "11/10/2025", "end_date": "12/10/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanhkien1", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "13/12/2025", "end_date": "14/12/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 2", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "2.900.000", "href": "https://bke.edu.vn/chanhkien2", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/ck2-01-20220214103634.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "25/10/2025", "end_date": "26/10/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanhkien1", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "27/12/2025", "end_date": "28/12/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 2", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "2.900.000", "href": "https://bke.edu.vn/chanhkien2", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/ck2-01-20220214103634.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "03/11/2025", "end_date": "03/11/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh kiến Học Hiểu Hành", "location": "Zoom", "learning_mode": "Zoom", "categories": "Hành trình 3 Gốc", "tuition": "3.200.000", "href": "https://bke.edu.vn/ck3h", "thumbnail": "https://w.ladicdn.com/s289x162/5e8449c2481e7d0f79868b5d/z5688760085770_7376ba05524391bcdec81d8e64a63e74-20240801072109-tv3h7.jpg", "description": "Nắm trọn vẹn bí quyết được thầy Trần Việt Quân đúc kết suốt 25 năm Thực Hành Chuyển Hóa ngay tại lớp"},
+        {"start_date": "12/11/2025", "end_date": "12/11/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "499.000", "href": "https://bke.edu.vn/nhantamoff", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/share-web-01-20221214070703-rnux3.jpg", "description": ""},
+        {"start_date": "19/11/2025", "end_date": "19/11/2025", "speaker": "Thầy Trần Việt Quân", "course": "Thấu hiểu nhân tâm", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "499.000", "href": "https://bke.edu.vn/nhantamoff", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/share-web-01-20221214070703-rnux3.jpg", "description": ""},
+        {"start_date": "10/10/2025", "end_date": "12/10/2025", "speaker": "Cô Nguyễn Đoàn Kim Sơn", "course": "Hạnh Phúc Tuổi Già", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Lãnh đạo chính mình - Tỉnh thức", "tuition": "TÙY HỶ", "href": "https://bke.edu.vn/hptuoigia", "thumbnail": "", "description": ""},
+        {"start_date": "10/01/2026", "end_date": "11/01/2026", "speaker": "Thầy Trần Việt Quân", "course": "Nhân Tướng Học", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/nhantuong", "thumbnail": "https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg", "description": "Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người"},
+        {"start_date": "17/12/2025", "end_date": "18/12/2025", "speaker": "Thầy Trần Việt Quân", "course": "Rèn Tâm Vững Vàng", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "11.900.000", "href": "https://bke.edu.vn/rentam", "thumbnail": "https://w.ladicdn.com/s600x500/5e8449c2481e7d0f79868b5d/rentam-20250505024647-oievi.png", "description": "Bí mật trí tuệ cảm xúc ứng dụng - bình an trong giông bão. Học tại lớp 2 ngày offline + 6 tuần online & thực hành liên tục trong đời sống"},
+        {"start_date": "30/12/2025", "end_date": "31/12/2025", "speaker": "Thầy Trần Việt Quân", "course": "Rèn Tâm Vững Vàng", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "11.900.000", "href": "https://bke.edu.vn/rentam", "thumbnail": "https://w.ladicdn.com/s600x500/5e8449c2481e7d0f79868b5d/rentam-20250505024647-oievi.png", "description": "Bí mật trí tuệ cảm xúc ứng dụng - bình an trong giông bão. Học tại lớp 2 ngày offline + 6 tuần online & thực hành liên tục trong đời sống"},
+        {"start_date": "07/01/2026", "end_date": "08/01/2026", "speaker": "Thầy Trần Việt Quân", "course": "Xây Dựng Đội Ngũ", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình Doanh nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/team", "thumbnail": "https://w.ladicdn.com/s292x164/5e8449c2481e7d0f79868b5d/team-20241016055944-_2iwu.png", "description": "Một DN mạnh không cần những con người rời rạc. Một doanh nghiệp mạnh cần một đội ngũ mạnh & gắn kết"},
+        {"start_date": "01/11/2025", "end_date": "02/11/2025", "speaker": "Thầy Trần Việt Quân", "course": "Chánh Kiến 1", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "1.900.000", "href": "https://bke.edu.vn/chanhkien1", "thumbnail": "https://w.ladicdn.com/5e8449c2481e7d0f79868b5d/ck1-banner-01-20220602030602.jpg", "description": "Hành trình 2 ngày đêm giúp bạn hiểu sâu phương pháp thực hành để tìm ra hạnh phúc đích thực cho chính mình"},
+        {"start_date": "30/11/2025", "end_date": "30/11/2025", "speaker": "Thầy Trần Việt Quân", "course": "Kinh dịch", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "5.900.000", "href": "https://bke.edu.vn/kinhdich", "thumbnail": "", "description": ""},
+        {"start_date": "04/12/2025", "end_date": "04/12/2025", "speaker": "Thầy Trần Việt Quân", "course": "Kinh dịch", "location": "Hà Nội", "learning_mode": "Offline", "categories": "Hành trình 3 Gốc", "tuition": "5.900.000", "href": "https://bke.edu.vn/kinhdich", "thumbnail": "", "description": ""},
+        {"start_date": "24/01/2026", "end_date": "25/01/2026", "speaker": "Thầy Trần Việt Quân", "course": "Nhân Tướng Học", "location": "Hồ Chí Minh", "learning_mode": "Offline", "categories": "Đọc vị Giải mã sự nghiệp", "tuition": "6.900.000", "href": "https://bke.edu.vn/nhantuong", "thumbnail": "https://w.ladicdn.com/s289x164/5e8449c2481e7d0f79868b5d/banner-01-20220214044916.jpg", "description": "Giúp bạn soi mình, hiểu mình và sửa mình. Giúp bạn nhìn người, hiểu người & giúp người"}
       ];
     }
+    
+    // Process data (either from API or fallback)
+    return rawData
+      .filter(x => x.course && x.speaker)
+      .map(x => {
+        // Xử lý học phí đặc biệt
+        let processedFee;
+        const tuitionStr = String(x.tuition || '').trim();
+
+        if (!tuitionStr) {
+          processedFee = "--";
+        } else if (/[a-zA-Z]/i.test(tuitionStr)) { // Nếu chứa chữ cái, giữ nguyên dạng chuỗi (cho "Liên hệ", "Miễn phí", "Tùy Hỷ"...)
+          processedFee = tuitionStr;
+        } else { // Ngược lại, xử lý thành số
+          processedFee = parseNum(tuitionStr);
+        }
+        
+        // Nếu end_date trống, gán bằng start_date
+        const endDate = x.end_date || x.start_date;
+
+        return {
+          start: x.start_date || '--/--/----',
+          end: endDate || '--/--/----',
+          speaker: x.speaker,
+          course: x.course,
+          loc: x.location || 'N/A',
+          mode: x.learning_mode || 'N/A',
+          fee: processedFee,
+          href: x.href || '#',
+          thumbnail: x.thumbnail || '',
+          description: x.description || '',
+          categories: x.categories || ''
+        };
+      });
   }
+
 
   /* ========================================================================
    *  Mobile card renderer
@@ -1145,7 +1099,7 @@
       container.html('<p style="text-align:center;padding:1.5rem;color:var(--text-muted)">Không tìm thấy khóa học phù hợp.</p>');
       return;
     }
-
+    
     // Dữ liệu cho cards giờ đã được lọc trước khi gọi hàm này.
     // Chỉ cần sắp xếp theo ngày bắt đầu (gần nhất ở đầu).
     const sortedData = [...data].sort((a, b) => {
@@ -1155,26 +1109,26 @@
         const [dd, mm, yyyy] = dateStr.split('/');
         return new Date(yyyy, mm - 1, dd); // mm - 1 vì tháng trong JS bắt đầu từ 0
       };
-
+      
       const dateA = parseDate(a.start);
       const dateB = parseDate(b.start);
-
+      
       // Sắp xếp tăng dần (ngày gần nhất ở đầu)
       return dateA.getTime() - dateB.getTime();
     });
-
+    
     const getModeBadgeClass = mode => {
       const online = /online|zoom|trực tuyến/i.test(mode);
-      const hybrid = /hybrid|kết hợp/i.test(mode);
+      const hybrid = /hybrid|kết hợp/i.test(mode) || /offline và zoom/i.test(mode);
       return online ? 'online' : hybrid ? 'hybrid' : 'offline';
     };
-
+    
     const getModeIcon = mode => {
       const online = /online|zoom|trực tuyến/i.test(mode);
-      const hybrid = /hybrid|kết hợp/i.test(mode);
+      const hybrid = /hybrid|kết hợp/i.test(mode) || /offline và zoom/i.test(mode);
       return online ? 'fa-video' : hybrid ? 'fa-people-arrows' : 'fa-chalkboard-teacher';
     };
-
+    
     container.html(sortedData.map(c => {
       const isSpecial = specialCourses.includes(c.course);
       const specialClass = isSpecial ? 'special-course-highlight' : '';
@@ -1184,7 +1138,7 @@
         const [dd, mm] = d.split('/');
         return `${dd}/${mm}`;
       };
-
+      
       const dateDisplay = c.start === c.end
         ? formatDM(c.start)
         : `${formatDM(c.start)} - ${formatDM(c.end)}`;
@@ -1192,17 +1146,17 @@
       return `
       <article class="course-card">
         <div class="card-thumbnail-container">
-          ${c.thumbnail ?
+          ${c.thumbnail ? 
             `<img src="${c.thumbnail}" alt="${c.course}" class="card-thumbnail" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
-             <div class="card-thumbnail-placeholder" style="display:none;">${c.course}</div>` :
+             <div class="card-thumbnail-placeholder" style="display:none;">${c.course}</div>` : 
             `<div class="card-thumbnail-placeholder">${c.course}</div>`
           }
         </div>
-
+        
         <div class="card-header">
           <h3 class="card-title ${specialClass}">${c.course}</h3>
         </div>
-
+        
         <div class="card-body">
           <div class="card-meta">
             <span class="card-mode-badge ${getModeBadgeClass(c.mode)}">
@@ -1210,7 +1164,7 @@
               ${c.mode}
             </span>
           </div>
-
+          
           <div class="card-info-grid">
             <div class="card-info-item">
               <i class="fas fa-user info-icon"></i>
@@ -1230,12 +1184,12 @@
               <span class="info-value">${c.categories}</span>
             </div>` : ''}
           </div>
-
+          
           <div class="card-price">${typeof c.fee === 'string' ? c.fee : VND(c.fee)}</div>
-
-          ${c.description ? `<div class="card-description">${c.description}</div>` : ''}
+          
+          ${c.description ? `<div class="card-description">${c.description.replace(/\n/g, '<br>')}</div>` : ''}
         </div>
-
+        
         <div class="card-footer">
           <a href="${c.href}" target="_blank" class="card-register-btn">Đăng ký ngay</a>
           <a href="${c.href}" target="_blank" class="card-details-btn">Chi tiết</a>
@@ -1271,8 +1225,8 @@
     const groups = [
       {id:'hcm',label:'Tại Hồ Chí Minh',  match: c=>/Hồ Chí Minh/i.test(c.loc)},
       {id:'hn', label:'Tại Hà Nội',   match: c=>/Hà Nội/i.test(c.loc)},
-      {id:'other',label:'Tỉnh/Thành Phố Khác', match: c=>!/(Hồ Chí Minh|Hà Nội|Zoom)/i.test(c.loc)},
-      {id:'online',label:'Trực Tuyến Qua Zoom', match: c=>/zoom/i.test(c.loc)}
+      {id:'other',label:'Tỉnh/Thành Phố Khác', match: c=>!/(Hồ Chí Minh|Hà Nội|Zoom)/i.test(c.loc) && !/online/i.test(c.mode)},
+      {id:'online',label:'Trực Tuyến Qua Zoom', match: c=>/zoom/i.test(c.loc) || /online/i.test(c.mode)}
     ];
 
     let htmls = [];
@@ -1396,7 +1350,7 @@
       initComplete: function() {
         const isDesktop = window.innerWidth > 1200;
         const topValue = isDesktop ? '0px' : '80px';
-
+        
         $('#courses thead th').css({
           'position': 'sticky',
           'top': topValue,
@@ -1408,7 +1362,7 @@
       drawCallback: function() {
         const isDesktop = window.innerWidth > 1200;
         const topValue = isDesktop ? '0px' : '80px';
-
+        
         $('#courses thead th').css({
           'position': 'sticky',
           'top': topValue,
@@ -1427,7 +1381,7 @@
     $(window).on('resize', debounce(function() {
       const isDesktop = window.innerWidth > 1200;
       const topValue = isDesktop ? '0px' : '80px';
-
+      
       $('#courses thead th').css('top', topValue);
       $('.dataTables_scrollHead').css('top', topValue);
     }, 250));
@@ -1472,7 +1426,7 @@
         const windowHeight = window.innerHeight;
         const documentHeight = document.documentElement.scrollHeight;
         const distanceFromBottom = documentHeight - (scrollTop + windowHeight);
-
+        
         // Ẩn indicator khi còn cách đáy 150px
         return distanceFromBottom <= 150;
       }
@@ -1480,10 +1434,10 @@
       // Hiển thị indicator với animation smooth
       function showIndicator() {
         if (isIndicatorVisible) return;
-
+        
         $indicator.removeClass('hiding').addClass('visible');
         isIndicatorVisible = true;
-
+        
         // Clear any existing hide timeout
         if (hideTimeout) {
           clearTimeout(hideTimeout);
@@ -1494,10 +1448,10 @@
       // Ẩn indicator với animation smooth
       function hideIndicator() {
         if (!isIndicatorVisible) return;
-
+        
         $indicator.removeClass('visible').addClass('hiding');
         isIndicatorVisible = false;
-
+        
         // Hoàn toàn ẩn element sau khi animation kết thúc
         hideTimeout = setTimeout(() => {
           $indicator.removeClass('hiding');
@@ -1527,7 +1481,7 @@
       let scrollTimeout;
       function throttledScrollHandler() {
         if (scrollTimeout) return;
-
+        
         scrollTimeout = setTimeout(() => {
           updateIndicatorVisibility();
           scrollTimeout = null;
