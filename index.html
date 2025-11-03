@@ -23,6 +23,85 @@
   <script src="https://cdn.datatables.net/1.13.7/js/jquery.dataTables.min.js"></script>
 
   <style>
+    /* Mobile Carousel Styles */
+#carouselTrack {
+  touch-action: pan-y pinch-zoom;
+}
+
+.carousel-tile {
+  flex: 0 0 100%;
+  width: 100%;
+  min-height: 260px;
+  padding: 1.5rem 3rem; /* Tăng padding trái phải */
+  position: relative;
+  overflow: hidden;
+}
+
+.carousel-tile h3 {
+  font-size: 1.125rem;
+  font-weight: 700;
+  margin: 0 0 0.75rem 0;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.carousel-tile .tile-divider {
+  top: 46px;
+}
+
+.carousel-tile ul {
+  list-style: none;
+  margin: 0;
+  padding-top: 0.5rem;
+  font-size: 0.9375rem;
+  line-height: 1.6;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.carousel-tile ul li {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.carousel-tile ul::-webkit-scrollbar {
+  width: 6px;
+}
+
+.carousel-tile ul::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.carousel-tile ul::-webkit-scrollbar-thumb {
+  background-color: rgba(255, 255, 255, 0.3);
+  border-radius: 3px;
+}
+
+/* Carousel Dots */
+.carousel-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #cbd5e1;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.carousel-dot.active {
+  width: 24px;
+  border-radius: 4px;
+  background: #4f46e5;
+}
+
+/* Disable buttons when at edges */
+#carouselPrev:disabled,
+#carouselNext:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
     /* Custom styles that can't be replaced with Tailwind */
     * { box-sizing: border-box; margin: 0; padding: 0; }
     
@@ -299,6 +378,31 @@
             <span class="text-center break-words">Các buổi chia sẻ cộng đồng</span>
           </button>
         </div>
+        <!-- Mobile Highlights Carousel -->
+<section id="mobileHighlights" class="lg:hidden mb-6 px-1">
+  <div class="relative">
+    <!-- Carousel Container -->
+    <div class="overflow-hidden rounded-xl">
+      <div id="carouselTrack" class="flex transition-transform duration-500 ease-out">
+        <!-- Tiles sẽ được render bằng JS -->
+      </div>
+    </div>
+    
+    <!-- Navigation Buttons -->
+   <!-- Navigation Buttons - UPDATED -->
+<button id="carouselPrev" class="absolute left-1 top-1/2 -translate-y-1/2 w-9 h-9 bg-white/95 backdrop-blur-sm rounded-full shadow-lg flex items-center justify-center text-gray-700 transition-all hover:bg-white hover:scale-110 active:scale-95 z-10">
+  <i class="fas fa-chevron-left text-sm"></i>
+</button>
+<button id="carouselNext" class="absolute right-1 top-1/2 -translate-y-1/2 w-9 h-9 bg-white/95 backdrop-blur-sm rounded-full shadow-lg flex items-center justify-center text-gray-700 transition-all hover:bg-white hover:scale-110 active:scale-95 z-10">
+  <i class="fas fa-chevron-right text-sm"></i>
+</button>
+    
+    <!-- Dots Indicator -->
+    <div id="carouselDots" class="flex justify-center gap-2 mt-4">
+      <!-- Dots sẽ được render bằng JS -->
+    </div>
+  </div>
+</section>
       </section>
 
       <!-- Desktop Highlights -->
@@ -897,6 +1001,7 @@
 
     fillCards(courseData);
     renderHighlights(courseData);
+    renderMobileCarousel(courseData); 
     initMobileScrollIndicator();
 
     const dt = $('#courses').DataTable({
@@ -960,14 +1065,20 @@
     }));
 
     $(window).on('resize', debounce(function() {
-      const isDesktop = window.innerWidth > 1200;
-      const topValue = isDesktop ? '0px' : '80px';
-      $('#courses thead th').css('top', topValue);
-      $('.dataTables_scrollHead').css('top', topValue);
+    const isDesktop = window.innerWidth > 1200;
+    const topValue = isDesktop ? '0px' : '80px';
+    $('#courses thead th').css('top', topValue);
+    $('.dataTables_scrollHead').css('top', topValue);
+    
+    // Re-render carousel on orientation change
+    if (!isDesktop) {
+        renderMobileCarousel(dt.rows({ search: 'applied' }).data().toArray());
+    }
     }, 250));
 
     dt.on('draw.dt', () => {
       fillCards(dt.rows({ search: 'applied' }).data().toArray());
+       renderMobileCarousel(dt.rows({ search: 'applied' }).data().toArray());
       if (window.updateMobileScrollIndicator) {
         setTimeout(window.updateMobileScrollIndicator, 100);
       }
@@ -1047,6 +1158,184 @@
       window.updateMobileScrollIndicator = updateIndicatorVisibility;
     }
   });
+  function renderMobileCarousel(courseData) {
+  const container = $('#carouselTrack').empty();
+  const dotsContainer = $('#carouselDots').empty();
+  
+  if ($(window).width() >= 1200) return;
+
+  const groups = [
+    {id:'hcm', label:'Tại Hồ Chí Minh', bg:'bg-[#FFFBEC]', text:'text-navy', match: c=>/Hồ Chí Minh/i.test(c.loc)},
+    {id:'hn', label:'Tại Hà Nội', bg:'bg-[#E3FFFF]', text:'text-[#398398]', match: c=>/Hà Nội/i.test(c.loc)},
+    {id:'other', label:'Tỉnh/Thành Phố Khác', bg:'bg-[#FFEBFC]', text:'text-navy', match: c=>!/(Hồ Chí Minh|Hà Nội|Zoom)/i.test(c.loc) && !/online/i.test(c.mode)},
+    {id:'online', label:'Trực Tuyến Qua Zoom', bg:'bg-blue-500', text:'text-white', match: c=>/zoom/i.test(c.loc) || /online/i.test(c.mode)}
+  ];
+
+  const formatDM = d => {
+    if (!d || d.includes('--')) return '??/??';
+    const [dd, mm] = d.split('/');
+    return `${dd}/${mm}`;
+  };
+
+  const parseDate = (d) => {
+    if (!d || d.includes('--')) return null;
+    const [dd, mm, yy] = d.split('/');
+    return new Date(yy, mm - 1, dd);
+  };
+
+  groups.forEach((g, index) => {
+    const list = courseData
+      .filter(c => g.match(c))
+      .sort((a, b) => parseDate(a.start) - parseDate(b.start));
+
+    let items = '';
+    if (g.id === 'other') {
+      items = list.map(c => {
+        const specialClass = specialCourses.includes(c.course) ? 'text-red-600 font-bold' : '';
+        const dateDisplay = c.start === c.end ? formatDM(c.start) : `${formatDM(c.start)} – ${formatDM(c.end)}`;
+        return `<li>
+          <div class="flex-1">
+            <a href="${c.href}" target="_blank" class="${g.text} no-underline transition-opacity active:opacity-70 text-[15px] ${specialClass}">${c.course}</a>
+            <span class="${g.text === 'text-white' ? 'text-white/80' : g.text} ml-1.5 text-[15px]">(${c.loc})</span>
+          </div>
+          <span class="${g.text} whitespace-nowrap text-[15px]">${dateDisplay}</span>
+        </li>`;
+      }).join('');
+    } else {
+      items = list.map(c => {
+        const specialClass = specialCourses.includes(c.course) ? (g.id === 'online' ? 'text-white font-bold' : 'text-red-600 font-bold') : '';
+        const dateDisplay = c.start === c.end ? formatDM(c.start) : `${formatDM(c.start)} – ${formatDM(c.end)}`;
+        return `<li>
+          <a href="${c.href}" target="_blank" class="flex-1 ${g.text} no-underline transition-opacity active:opacity-70 break-words text-[15px] ${specialClass}">${c.course}</a>
+          <span class="${g.text} whitespace-nowrap text-[15px]">${dateDisplay}</span>
+        </li>`;
+      }).join('');
+    }
+
+    const tile = `
+      <div class="carousel-tile ${g.bg} ${g.text} rounded-xl shadow-md">
+        <h3>${g.label}</h3>
+        <div class="tile-divider"></div>
+        <ul>${items || '<li>Đang cập nhật…</li>'}</ul>
+      </div>`;
+    
+    container.append(tile);
+    dotsContainer.append(`<div class="carousel-dot ${index === 0 ? 'active' : ''}" data-index="${index}"></div>`);
+  });
+
+  initCarousel();
+}
+function initCarousel() {
+  let currentIndex = 0;
+  const track = $('#carouselTrack');
+  const slides = track.children();
+  const totalSlides = slides.length;
+  const prevBtn = $('#carouselPrev');
+  const nextBtn = $('#carouselNext');
+  const dots = $('.carousel-dot');
+  
+  let startX = 0;
+  let currentX = 0;
+  let isDragging = false;
+
+  function updateCarousel(animate = true) {
+    const offset = -currentIndex * 100;
+    if (animate) {
+      track.css('transition', 'transform 0.5s ease-out');
+    } else {
+      track.css('transition', 'none');
+    }
+    track.css('transform', `translateX(${offset}%)`);
+    
+    // Update dots
+    dots.removeClass('active');
+    dots.eq(currentIndex).addClass('active');
+    
+    // Update buttons
+    prevBtn.prop('disabled', currentIndex === 0);
+    nextBtn.prop('disabled', currentIndex === totalSlides - 1);
+  }
+
+  function goToSlide(index) {
+    currentIndex = Math.max(0, Math.min(index, totalSlides - 1));
+    updateCarousel();
+  }
+
+  // Button handlers
+  prevBtn.on('click', () => goToSlide(currentIndex - 1));
+  nextBtn.on('click', () => goToSlide(currentIndex + 1));
+  
+  // Dot handlers
+  dots.on('click', function() {
+    goToSlide($(this).data('index'));
+  });
+
+  // Touch/swipe handlers
+  track.on('touchstart', (e) => {
+    startX = e.touches[0].clientX;
+    isDragging = true;
+    track.css('transition', 'none');
+  });
+
+  track.on('touchmove', (e) => {
+    if (!isDragging) return;
+    currentX = e.touches[0].clientX;
+    const diff = currentX - startX;
+    const offset = -currentIndex * 100 + (diff / track.width()) * 100;
+    track.css('transform', `translateX(${offset}%)`);
+  });
+
+  track.on('touchend', () => {
+    if (!isDragging) return;
+    isDragging = false;
+    const diff = currentX - startX;
+    
+    if (Math.abs(diff) > 50) {
+      if (diff > 0 && currentIndex > 0) {
+        goToSlide(currentIndex - 1);
+      } else if (diff < 0 && currentIndex < totalSlides - 1) {
+        goToSlide(currentIndex + 1);
+      } else {
+        updateCarousel();
+      }
+    } else {
+      updateCarousel();
+    }
+  });
+
+  // Auto-slide every 5 seconds
+  let autoSlideInterval = setInterval(() => {
+    if (currentIndex < totalSlides - 1) {
+      goToSlide(currentIndex + 1);
+    } else {
+      goToSlide(0);
+    }
+  }, 5000);
+
+  // Pause auto-slide on interaction
+// Pause auto-slide only when swiping (not when clicking links)
+track.on('touchstart mousedown', (e) => {
+  // Chỉ pause nếu không phải click vào link hoặc button
+  if (!$(e.target).closest('a, button').length) {
+    clearInterval(autoSlideInterval);
+  }
+});
+
+track.on('touchend mouseup', (e) => {
+  // Chỉ restart nếu đã thực sự swipe (không phải click vào link)
+  if (!$(e.target).closest('a, button').length) {
+    clearInterval(autoSlideInterval);
+    autoSlideInterval = setInterval(() => {
+      if (currentIndex < totalSlides - 1) {
+        goToSlide(currentIndex + 1);
+      } else {
+        goToSlide(0);
+      }
+    }, 5000);
+  }
+});
+  updateCarousel(false);
+}
 </script>
 </body>
 </html>
