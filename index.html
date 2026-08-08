@@ -509,15 +509,147 @@
     });
   });
 
-  async function getData() {
-    let rawData;
+  /* ══════════════════════════════════════════════════════════════
+     CẤU HÌNH NGUỒN DỮ LIỆU
+
+     Điền 2 giá trị dưới đây là trang tự lấy lịch từ Google Sheet,
+     sửa Sheet xong F5 là thấy, không cần đụng vào code nữa.
+
+     Để trống id → trang bỏ qua Sheet, dùng data.json, rồi tới dữ
+     liệu dự phòng nhúng bên dưới (chạy y như trước khi có Sheet).
+
+     Đây là chỗ DUY NHẤT cần sửa: workflow đồng bộ cũng đọc cấu hình
+     từ ngay khối này, không phải khai báo lại ở đâu nữa.
+     ══════════════════════════════════════════════════════════════ */
+  const SHEET = {
+    id:  '1S6BHr6MFR_-37EHV60ZXfS5_7DdnTAj7zEcCQ12wFsU',  // trong URL: /spreadsheets/d/<ID>/edit
+    gid: '0'                                              // trong URL: #gid=<GID>, ứng với 1 tab
+  };
+  const FETCH_TIMEOUT_MS = 4000;
+
+  // Tiêu đề cột trong Sheet, so khớp sau khi bỏ dấu và bỏ khoảng trắng.
+  // Mục đầu mỗi dòng là tên cột thật đang dùng, các mục sau là biến thể
+  // chấp nhận được để đổi tên cột không làm hỏng trang.
+  const HEADER_ALIASES = {
+    id:            ['idrecord', 'ma', 'maso'],
+    start_date:    ['tungay', 'ngaybatdau', 'ngaykhaigiang', 'batdau', 'khaigiang'],
+    end_date:      ['denngay', 'ngayketthuc', 'ketthuc'],
+    speaker:       ['diengia', 'giangvien', 'nguoiday'],
+    course:        ['khoahoc', 'tenkhoahoc', 'sukien'],
+    location:      ['diadiem', 'noihoc', 'khuvuc'],
+    learning_mode: ['hinhthuc', 'hinhthuchoc'],
+    categories:    ['loaikhoahoc', 'danhmuc', 'nhom', 'chuongtrinh'],
+    tuition:       ['hocphi', 'chiphi'],
+    href:          ['chitietlink', 'link', 'duongdan', 'lienket'],
+    thumbnail:     ['thumbnail', 'anh', 'hinhanh', 'banner'],
+    description:   ['mota', 'gioithieu'],
+    register_href: ['dangkylink', 'linkdangky', 'ghidanh']
+  };
+
+  const normKey = s => stripVN(s).replace(/[\s_]+/g, '');
+  const pad2 = n => String(n).padStart(2, '0');
+
+  // Đưa mọi kiểu ngày Sheet có thể trả về về dạng dd/mm/yyyy
+  const normDate = v => {
+    const s = String(v ?? '').trim();
+    if (!s) return '';
+    let m = s.match(/^Date\((\d{4}),(\d{1,2}),(\d{1,2})\)$/);   // Date(2026,6,11)
+    if (m) return `${pad2(m[3])}/${pad2(+m[2] + 1)}/${m[1]}`;
+    m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);                // 2026-07-11
+    if (m) return `${pad2(m[3])}/${pad2(m[2])}/${m[1]}`;
+    m = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);             // 11/7/2026
+    if (m) return `${pad2(m[1])}/${pad2(m[2])}/${m[3]}`;
+    return s;
+  };
+
+  // Parser CSV theo RFC 4180 — chịu được dấu phẩy và xuống dòng trong ô
+  function parseCSV(text) {
+    const rows = [];
+    let row = [], field = '', inQuotes = false;
+    text = String(text).replace(/^﻿/, '');
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      if (inQuotes) {
+        if (c !== '"') { field += c; continue; }
+        if (text[i + 1] === '"') { field += '"'; i++; } else inQuotes = false;
+      } else if (c === '"') inQuotes = true;
+      else if (c === ',') { row.push(field); field = ''; }
+      else if (c === '\n') { row.push(field); rows.push(row); row = []; field = ''; }
+      else if (c !== '\r') field += c;
+    }
+    if (field !== '' || row.length) { row.push(field); rows.push(row); }
+    return rows;
+  }
+
+  function csvToRecords(text) {
+    const rows = parseCSV(text).filter(r => r.some(c => String(c).trim() !== ''));
+    if (!rows.length) return [];
+
+    const header = rows.shift().map(normKey);
+    const idx = {};
+    Object.entries(HEADER_ALIASES).forEach(([key, aliases]) => {
+      const wanted = [normKey(key), ...aliases.map(normKey)];
+      const i = header.findIndex(h => wanted.includes(h));
+      if (i >= 0) idx[key] = i;
+    });
+
+    if (idx.course === undefined || idx.speaker === undefined) {
+      throw new Error('không tìm thấy cột khóa học / giảng viên — kiểm tra dòng tiêu đề của Sheet');
+    }
+
+    return rows.map(r => {
+      const rec = {};
+      Object.entries(idx).forEach(([key, i]) => { rec[key] = String(r[i] ?? '').trim(); });
+      rec.start_date = normDate(rec.start_date);
+      rec.end_date = normDate(rec.end_date);
+      return rec;
+    });
+  }
+
+  const DATA_SOURCES = [
+    {
+      name: 'Google Sheet',
+      type: 'csv',
+      url: () => SHEET.id
+        ? `https://docs.google.com/spreadsheets/d/${SHEET.id}/gviz/tq?tqx=out:csv&gid=${encodeURIComponent(SHEET.gid)}`
+        : null
+    },
+    { name: 'data.json', type: 'json', url: () => `./data.json?t=${Date.now()}` }
+  ];
+
+  async function fetchSource(src) {
+    const url = src.url();
+    if (!url) return null;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
     try {
-      const res = await fetch('https://webhook.gnh.vn/webhook/event_info', { cache: 'no-store' });
-      if (!res.ok) throw new Error(res.status);
-      rawData = await res.json();
-    } catch (err) {
-      console.warn('API lỗi, dùng dữ liệu demo:', err);
-  rawData = [
+      const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return src.type === 'csv' ? csvToRecords(await res.text()) : await res.json();
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Thử lần lượt từng nguồn, nguồn nào có dữ liệu thì dùng
+  async function loadRawData() {
+    for (const src of DATA_SOURCES) {
+      try {
+        const rows = await fetchSource(src);
+        if (Array.isArray(rows) && rows.length) {
+          console.info(`[dữ liệu] nguồn: ${src.name} — ${rows.length} dòng`);
+          return rows;
+        }
+        if (rows) console.warn(`[dữ liệu] ${src.name} rỗng, thử nguồn kế tiếp`);
+      } catch (err) {
+        console.warn(`[dữ liệu] ${src.name} lỗi (${err.message}), thử nguồn kế tiếp`);
+      }
+    }
+    console.warn(`[dữ liệu] dùng bản dự phòng nhúng trong trang (${FALLBACK_DATA.length} dòng)`);
+    return FALLBACK_DATA;
+  }
+
+  const FALLBACK_DATA = [
   {
     id: "psf2Qhm4",
     start_date: "23/12/2026",
@@ -1066,8 +1198,9 @@
   }
 ];
 
-    }
-    
+  async function getData() {
+    const rawData = await loadRawData();
+
     return rawData
       .filter(x => x.course && x.speaker)
       .map(x => {
@@ -1090,6 +1223,8 @@
           mode: x.learning_mode || 'N/A',
           fee: processedFee,
           href: x.href || '#',
+          // Sheet có cột "Đăng ký (link)" riêng; chưa điền thì dùng link chi tiết
+          registerHref: x.register_href || x.href || '#',
           thumbnail: x.thumbnail || '',
           description: x.description || '',
           categories: x.categories || ''
@@ -1185,7 +1320,7 @@
         </div>
         
         <div class="px-5 pb-5 flex gap-3">
-          <a href="${c.href}" target="_blank" class="flex-1 bg-green-600 text-white px-4 py-3 rounded-lg font-semibold transition-all hover:bg-green-700 hover:-translate-y-0.5 text-center text-sm">Đăng ký ngay</a>
+          <a href="${c.registerHref || c.href}" target="_blank" class="flex-1 bg-green-600 text-white px-4 py-3 rounded-lg font-semibold transition-all hover:bg-green-700 hover:-translate-y-0.5 text-center text-sm">Đăng ký ngay</a>
           <a href="${c.href}" target="_blank" class="bg-transparent text-primary px-4 py-3 border border-primary rounded-lg font-medium transition-all hover:bg-primary hover:text-white text-sm">Chi tiết</a>
         </div>
       </article>`}).join(''));
